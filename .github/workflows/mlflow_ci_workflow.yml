@@ -1,0 +1,220 @@
+name: MLflow CI Workflow - Fixed
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'MLProject/**'
+  workflow_dispatch:
+    inputs:
+      n_estimators:
+        description: 'Number of trees'
+        required: false
+        default: '200'
+      max_depth:
+        description: 'Maximum depth'
+        required: false
+        default: '15'
+
+permissions:
+  contents: write
+
+jobs:
+  train-and-deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    # ========================================================================
+    # BASIC SETUP
+    # ========================================================================
+    
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install mlflow==2.19.0
+        pip install pandas numpy scikit-learn matplotlib seaborn
+        
+    # ========================================================================
+    # DEBUG & VERIFICATION
+    # ========================================================================
+    
+    - name: Verify files exist
+      run: |
+        echo "=== Checking MLProject structure ==="
+        ls -la MLProject/
+        
+        echo ""
+        echo "=== Checking dataset files ==="
+        if [ -f "MLProject/telco_churn_train.csv" ]; then
+          echo "✓ Training dataset found"
+        else
+          echo "✗ Training dataset NOT found!"
+          exit 1
+        fi
+        
+        if [ -f "MLProject/telco_churn_test.csv" ]; then
+          echo "✓ Testing dataset found"
+        else
+          echo "✗ Testing dataset NOT found!"
+          exit 1
+        fi
+        
+    # ========================================================================
+    # MODEL TRAINING
+    # ========================================================================
+    
+    - name: Run MLflow Project
+      run: |
+        cd MLProject
+        mlflow run . \
+          --env-manager=local \
+          -P n_estimators=${{ github.event.inputs.n_estimators || 200 }} \
+          -P max_depth=${{ github.event.inputs.max_depth || 15 }}
+          
+    # ========================================================================
+    # VERIFY ARTIFACTS GENERATED
+    # ========================================================================
+    
+    - name: Verify artifacts generated
+      run: |
+        echo "=== Checking generated artifacts ==="
+        
+        if [ -d "MLProject/model" ]; then
+          echo "✓ Model folder found"
+          ls -la MLProject/model/
+        else
+          echo "✗ Model folder NOT found!"
+        fi
+        
+        if [ -f "MLProject/confusion_matrix.png" ]; then
+          echo "✓ Confusion matrix found"
+        else
+          echo "✗ Confusion matrix NOT found!"
+        fi
+        
+        if [ -f "MLProject/feature_importance.png" ]; then
+          echo "✓ Feature importance found"
+        else
+          echo "✗ Feature importance NOT found!"
+        fi
+        
+    # ========================================================================
+    # UPLOAD TO GITHUB ACTIONS (v4 - FIXED!)
+    # ========================================================================
+    
+    - name: Upload artifacts to GitHub Actions
+      uses: actions/upload-artifact@v4
+      with:
+        name: model-artifacts
+        path: |
+          MLProject/model/
+          MLProject/confusion_matrix.png
+          MLProject/feature_importance.png
+        retention-days: 30
+        if-no-files-found: warn
+        
+    # ========================================================================
+    # COMMIT ARTIFACTS TO REPOSITORY
+    # ========================================================================
+    
+    - name: Create artifacts directory
+      run: |
+        mkdir -p artifacts
+        echo "✓ Artifacts directory created"
+        
+    - name: Copy artifacts to artifacts folder
+      run: |
+        echo "=== Copying artifacts ==="
+        
+        # Copy model
+        if [ -d "MLProject/model" ]; then
+          cp -r MLProject/model artifacts/
+          echo "✓ Model copied"
+        else
+          echo "⚠ Model folder not found, skipping"
+        fi
+        
+        # Copy visualizations
+        if [ -f "MLProject/confusion_matrix.png" ]; then
+          cp MLProject/confusion_matrix.png artifacts/
+          echo "✓ Confusion matrix copied"
+        else
+          echo "⚠ Confusion matrix not found, skipping"
+        fi
+        
+        if [ -f "MLProject/feature_importance.png" ]; then
+          cp MLProject/feature_importance.png artifacts/
+          echo "✓ Feature importance copied"
+        else
+          echo "⚠ Feature importance not found, skipping"
+        fi
+        
+        echo ""
+        echo "=== Artifacts folder contents ==="
+        ls -laR artifacts/
+        
+    - name: Commit artifacts to repository
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        
+        # Add artifacts
+        git add artifacts/
+        
+        # Check if there are changes
+        if git diff --staged --quiet; then
+          echo "No changes to commit"
+        else
+          git commit -m "Auto: Update model artifacts [skip ci]"
+          echo "✓ Artifacts committed"
+        fi
+        
+    - name: Push changes
+      uses: ad-m/github-push-action@master
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        branch: ${{ github.ref }}
+        
+    # ========================================================================
+    # WORKFLOW SUMMARY
+    # ========================================================================
+    
+    - name: Generate workflow summary
+      run: |
+        echo "## 🎉 Training Completed Successfully!" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 📊 Generated Artifacts:" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        if [ -d "artifacts/model" ]; then
+          echo "- ✅ Model trained and saved" >> $GITHUB_STEP_SUMMARY
+          MODEL_SIZE=$(du -sh artifacts/model | cut -f1)
+          echo "  - Size: $MODEL_SIZE" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        if [ -f "artifacts/confusion_matrix.png" ]; then
+          echo "- ✅ Confusion matrix generated" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        if [ -f "artifacts/feature_importance.png" ]; then
+          echo "- ✅ Feature importance plot generated" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 📁 Repository Updates:" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ Artifacts committed to \`artifacts/\` folder" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ Available for download in Actions artifacts" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 🚀 Next Steps:" >> $GITHUB_STEP_SUMMARY
+        echo "1. Check \`artifacts/\` folder in repository" >> $GITHUB_STEP_SUMMARY
+        echo "2. Download artifacts from Actions tab" >> $GITHUB_STEP_SUMMARY
+        echo "3. View generated visualizations" >> $GITHUB_STEP_SUMMARY
